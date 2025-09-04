@@ -1,7 +1,8 @@
 # Indeks zmian
-> Repozytorium podzielone jest na 2 gałęzie - ***master*** i ***original***
+> Repozytorium podzielone jest na 2 gałęzie - ***master***, ***original*** i ***unit-tests***
 > - Zaproponowane zmiany  --> master
 > - Oryginał dla porónania --> original
+> - Testy jednostkowe --> unit-tests
 
 Miłej lektury!
 ## Projekt "Import"
@@ -42,3 +43,19 @@ Większość modeli używa typów jako *non-nullable*. Dodano *"?"* by to zmieni
 ### RestApiManager.cs
 Ależ tam jest konstruktorów!
 Czy jeśli w live-code i prawdziwym przypadku użycia nie korzystamy z innych konstruktorów i sposobów inicjalizacji obiektu a tylko tego w zadaniu, nie lepiej zachować jeden lub dwa konstruktory?
+
+## Projekt UnitTests
+> W tym projekcie skupiłem się głównie na testowaniu metod z klasy ***FivetranClientSupport***
+- W klasie ***FiveTranConnectionSupportTests*** zostały zaimplementowane testy jednostkowe za pomocą xUnit i Moq. Klasa zawiera statyczne metody i zmienne mające usprawnić proces testowania.
+- Metody statyczne odpowiadają sygnaturą metodom z **RestApiManager** aby symulować wynik ich działania.
+- Dodatkowo w tej gałęzi razem z projektem zostały zaimplementowane interfejsy **IConsoleIO** oraz **IRestApiManager** by łatwo móc mockować odpowiadające im klasy za pomocą *Moq*.
+### IConsoleIO
+Standardowe wykorzystanie metod z **Console**.
+Dodatkowo w klasie **ConsoleIO** używanej zamiast **Console** zaimplementowano mechanizm chroniący przed wyjątkami w przypadku użycia metody *Clear()* sprawdzając czy wyjście zostało przejęte.
+### IRestApiManager
+Interfejs deklarujący metody użyte w klasie **RestApiManager**
+### RunImport
+
+Kilka słów o metodzie **RunImport**:
+- Stara metoda zwraca niepewny i niedokładny wynik (czego się spodziewałem i opisałem wyżej), w wyniku często brakuje wszystkich connectorów lub schematów, czasem jednak wynik testu jest pozytywny (zdecydowanie jednak częściej - nie)
+- W nowej metodzie (**RunImportNew**) korzystającej z asynchroniczności w pełni i nieblokującej wątku w żaden sposób, wyniki były takie same za każdym razem co zostało sprawdzone w obu przypadkach przechwytywaniem wyjścia konsoli za pomocą użycia **ITestOutputHelper** z *xUnit*.
