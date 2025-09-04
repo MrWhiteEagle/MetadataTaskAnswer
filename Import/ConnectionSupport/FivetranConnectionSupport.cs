@@ -9,17 +9,27 @@ namespace Import.ConnectionSupport;
 // equivalent of database is group in Fivetran terminology
 public class FivetranConnectionSupport : IConnectionSupport
 {
+    private readonly IConsoleIO _consoleIO;
+    private readonly IRestApiManager? _restApiManager;
     public const string ConnectorTypeCode = "FIVETRAN";
-    private record FivetranConnectionDetailsForSelection(string ApiKey, string ApiSecret);
+    internal record FivetranConnectionDetailsForSelection(string ApiKey, string ApiSecret);
+
+    // Używanie opcjonalnych restapimanager i konsoli w przypadku użycia testów jednostkowych
+    public FivetranConnectionSupport(IRestApiManager? restApiManager = null, IConsoleIO? console = null)
+    {
+        this._consoleIO = console ?? new ConsoleIO();
+        // restapimanager może mieć null - w metodach i tak jest on tworzony i disposowany przez "using"
+        this._restApiManager = restApiManager;
+    }
+
+
 
     public object? GetConnectionDetailsForSelection()
     {
-        // Nie jestem pewien czy zbieranie kluczy API w konsoli to dobry pomysł, możnaby je zapisać w zmiennej środowkiskowej, lub zaszyfrowanym pliku.
-        // Ale nie wiem jak to naprawdę wygląda w kontekście użycia na żywo.
-        Console.Write("Provide your Fivetran API Key: ");
-        var apiKey = Console.ReadLine() ?? throw new ArgumentNullException();
-        Console.Write("Provide your Fivetran API Secret: ");
-        var apiSecret = Console.ReadLine() ?? throw new ArgumentNullException();
+        _consoleIO.Write("Provide your Fivetran API Key: ");
+        var apiKey = _consoleIO.ReadLine() ?? throw new ArgumentNullException();
+        _consoleIO.Write("Provide your Fivetran API Secret: ");
+        var apiSecret = _consoleIO.ReadLine() ?? throw new ArgumentNullException();
 
         return new FivetranConnectionDetailsForSelection(apiKey, apiSecret);
     }
@@ -67,7 +77,8 @@ public class FivetranConnectionSupport : IConnectionSupport
         {
             throw new ArgumentException("Invalid connection details provided.");
         }
-        using var restApiManager = new RestApiManager(details.ApiKey, details.ApiSecret, TimeSpan.FromSeconds(40));
+        // Sprawdzamy czy jest dostępny RestrApiManager z testu, jeśli nie - tworzymy nowy.
+        using var restApiManager = _restApiManager ?? new RestApiManager(details.ApiKey, details.ApiSecret, TimeSpan.FromSeconds(40));
         var groups = restApiManager
             .GetGroupsAsync(CancellationToken.None)
             .ToBlockingEnumerable();
@@ -85,8 +96,8 @@ public class FivetranConnectionSupport : IConnectionSupport
             consoleOutputBuffer += $"{elementIndex++}. {group.Name} (ID: {group.Id})\n";
         }
         consoleOutputBuffer += "Please select a group to import from (by number): ";
-        Console.Write(consoleOutputBuffer);
-        var input = Console.ReadLine();
+        _consoleIO.Write(consoleOutputBuffer);
+        var input = _consoleIO.ReadLine();
         if (string.IsNullOrWhiteSpace(input)
             || !int.TryParse(input, out var selectedIndex)
             || selectedIndex < 1
@@ -99,6 +110,8 @@ public class FivetranConnectionSupport : IConnectionSupport
         return selectedGroup.Id ?? throw new ArgumentNullException("Selected group was null or it's id was null.");
     }
 
+
+
     public void RunImport(object? connection)
     {
         if (connection is not RestApiManagerWrapper restApiManagerWrapper)
@@ -106,7 +119,7 @@ public class FivetranConnectionSupport : IConnectionSupport
             throw new ArgumentException("Invalid connection type provided.");
         }
 
-        var restApiManager = restApiManagerWrapper.RestApiManager;
+        var restApiManager = _restApiManager ?? restApiManagerWrapper.RestApiManager;
         var groupId = restApiManagerWrapper.GroupId;
 
         var connectors = restApiManager
@@ -133,7 +146,7 @@ public class FivetranConnectionSupport : IConnectionSupport
             }
         });
 
-        Console.WriteLine(allMappingsBuffer);
+        _consoleIO.WriteLine(allMappingsBuffer);
     }
 
     #region Poprawki
@@ -145,7 +158,7 @@ public class FivetranConnectionSupport : IConnectionSupport
         {
             throw new ArgumentException("Invalid connection details provided.");
         }
-        using var restApiManager = new RestApiManager(details.ApiKey, details.ApiSecret, TimeSpan.FromSeconds(40));
+        using IRestApiManager restApiManager = new RestApiManager(details.ApiKey, details.ApiSecret, TimeSpan.FromSeconds(40));
 
         Console.WriteLine("Fetching groups, please wait...\n");
 
@@ -241,9 +254,9 @@ public class FivetranConnectionSupport : IConnectionSupport
         ConcurrentQueue<string> allMappingsBuffer = new();
         allMappingsBuffer.Enqueue("Lineage mappings:\n");
         var tasks = new List<Task>();
-        Console.Clear();
+        _consoleIO.Clear();
         // Jako że użycie (jak poprzednio) .ToBlockingEnumerable() blokuje wątek - wolę asynchronicznie.
-        Console.WriteLine("Fetching connectors, please wait...\n"); // <-- Przynajmniej można coś pokazać.
+        _consoleIO.WriteLine("Fetching connectors, please wait...\n"); // <-- Przynajmniej można coś pokazać.
         // await foreach zwraca elementy sekwencyjnie, więc tutaj nic nie przyśpieszę, ale uważam że tak jest lepiej.
         await foreach (var connector in fetched)
         {
@@ -278,15 +291,15 @@ public class FivetranConnectionSupport : IConnectionSupport
                 }
             }));
         }
-        Console.WriteLine($"Found {tasks.Count} connectors.");
-        Console.WriteLine("Fetching schemas for connectors, please wait...\n");
+        _consoleIO.WriteLine($"Found {tasks.Count} connectors.");
+        _consoleIO.WriteLine("Fetching schemas for connectors, please wait...\n");
         // Czekamy na ukończenie wszytkich mapowań.
         await Task.WhenAll(tasks);
-        Console.Clear();
+        _consoleIO.Clear();
 
         foreach (var buffer in allMappingsBuffer)
         {
-            Console.Write(buffer);
+            _consoleIO.Write(buffer);
         }
     }
     #endregion
