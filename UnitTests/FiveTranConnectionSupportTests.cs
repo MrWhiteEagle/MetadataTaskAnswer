@@ -5,6 +5,8 @@ using FivetranClient.Models;
 using Import.ConnectionSupport;
 using Import.Helpers.Fivetran;
 using Moq;
+using System.Text;
+using System.Threading.Tasks;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -89,7 +91,8 @@ public class FiveTranConnectionSupportTests(ITestOutputHelper output)
     public void GetConnectionDetailsForSelection_ReturnsFivetranDetails()
     {
         // Setup
-        var consolemock = new Mock<IConsoleIO>();
+        var outputbuffer = new StringBuilder();
+        var consolemock = CreateConsoleMock(outputbuffer);
         consolemock.SetupSequence(c => c.ReadLine())
             .Returns(testkey)
             .Returns(testsecret);
@@ -100,8 +103,9 @@ public class FiveTranConnectionSupportTests(ITestOutputHelper output)
         // Wywołanie
         var details = support.GetConnectionDetailsForSelection();
 
+        _output.WriteLine(outputbuffer.ToString());
+
         // Wyniki
-        Assert.NotNull(details);
         var result = Assert.IsType<FivetranConnectionSupport.FivetranConnectionDetailsForSelection>(details);
         Assert.Equal(testkey, result.ApiKey);
         Assert.Equal(testsecret, result.ApiSecret);
@@ -129,57 +133,67 @@ public class FiveTranConnectionSupportTests(ITestOutputHelper output)
     // Test metody SelectToImport
     [Theory]
     [InlineData("1")]
-    public void SelectToImport_ReturnsGroupIdAsString(string pickedNo)
+    public async Task SelectToImport_ReturnsGroupIdAsString(string pickedNo)
     {
         // Setup
+        var outputbuffer = new StringBuilder();
         var managerMock = new Mock<IRestApiManager>();
-        var consoleMock = new Mock<IConsoleIO>();
-        managerMock.Setup(m => m.GetGroupsAsync(CancellationToken.None)).Returns(GetTestGroups());
+        var consoleMock = CreateConsoleMock(outputbuffer);
+        managerMock.Setup(m => m.GetGroupsAsync(It.IsAny<CancellationToken>())).Returns(GetTestGroups());
         consoleMock.Setup(c => c.ReadLine()).Returns(pickedNo);
 
         // Wywołanie
         var support = new FivetranConnectionSupport(managerMock.Object, consoleMock.Object);
         var details = new FivetranConnectionSupport.FivetranConnectionDetailsForSelection(testkey, testsecret);
 
-        // Pobieranie listy testowych grup do porównania
-        var testlist = GetTestGroups().ToBlockingEnumerable().ToList();
+        // Tworzenie wyniku porównawczego (od razu wyciągamy grupę)
+        var expected = Task.Run(async () =>
+        {
+            var groups = new List<Group>();
+            await foreach (var group in GetTestGroups())
+                groups.Add(group);
+            return groups[int.Parse(pickedNo) - 1].Id;
+        });
         var result = support.SelectToImport(details);
 
-        Assert.NotNull(result);
+        _output.WriteLine(outputbuffer.ToString());
+
+        // Wyniki
         Assert.IsType<string>(result);
-        Assert.Equal(result, testlist[int.Parse(pickedNo) - 1].Id);
+        Assert.Equal(result, await expected);
     }
 
     // Test metody RunImport (starej) - zwykle zwraca błędny wynik, ale czasem dobry - dowód na to że moja implementacja jest poprawna
     [Fact]
-    public void RunImport_WritesToConsole()
+    public async Task RunImport_WritesMappingsToConsole()
     {
         //Setup
+        var outputbuffer = new StringBuilder();
         var managerMock = new Mock<IRestApiManager>();
         var wrapperMock = new RestApiManagerWrapper(managerMock.Object, testgroupid);
+        var consoleMock = CreateConsoleMock(outputbuffer);
+
         managerMock.Setup(m => m.GetConnectorsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(GetTestConnectors());
-
-        // Mock schematów dla każdego connectora
         managerMock.Setup(m => m.GetConnectorSchemasAsync("con1", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(GetTestSchemas().Result);
+            .Returns(() => GetTestSchemas());
         managerMock.Setup(m => m.GetConnectorSchemasAsync("con2", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(GetTestSchemas().Result);
+            .Returns(() => GetTestSchemas());
         managerMock.Setup(m => m.GetConnectorSchemasAsync("con3", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(GetTestSchemas().Result);
+            .Returns(() => GetTestSchemas());
 
-        var support = new FivetranConnectionSupport();
-        // Tymczasowe przekierowanie Console.Out do StringWriter w celu ewaluacji wyjścia
-        var writer = new StringWriter();
-        Console.SetOut(writer);
+        var support = new FivetranConnectionSupport(console: consoleMock.Object);
+
+        // Wywołanie
         support.RunImport(wrapperMock);
-        var output = writer.ToString();
-        Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true }); // Przywrócenie standardowego wyjścia konsoli
-        _output.WriteLine(output); // Wypisanie przechwyconego wyjścia do testowego wyjścia
-        Assert.NotNull(output);
-        Assert.Contains("con1:", output);
-        Assert.Contains("con2:", output);
-        Assert.Contains("con3:", output);
+        var output = outputbuffer.ToString();
+
+        _output.WriteLine(output); // <-- Wypisanie przechwyconego wyjścia do testowego wyjścia
+
+        // Wuniki
+        Assert.True(!string.IsNullOrEmpty(output)); // <-- mamy wyjście
+        Assert.Contains("Lineage mappings:", output); // <-- mamy nagłówek
+        Assert.True(await CheckImportOutput(output)); // <-- mamy wszystkie oczekiwane mapowania
     }
 
     // Test metody RunImportNew - asynchronicznej wersji RunImport
@@ -187,43 +201,74 @@ public class FiveTranConnectionSupportTests(ITestOutputHelper output)
     public async Task RunImportNew_WritesMappingsToConsole()
     {
         //Setup
+        var outputbuffer = new StringBuilder();
         var managerMock = new Mock<IRestApiManager>();
+        var consoleMock = CreateConsoleMock(outputbuffer);
         var wrapperMock = new RestApiManagerWrapper(managerMock.Object, testgroupid);
 
         managerMock.Setup(m => m.GetConnectorsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(GetTestConnectors());
-
-
-        //Mock schematów
         managerMock.Setup(m => m.GetConnectorSchemasAsync("con1", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(GetTestSchemas().Result);
+            .Returns(() => GetTestSchemas());
         managerMock.Setup(m => m.GetConnectorSchemasAsync("con2", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(GetTestSchemas().Result);
+            .Returns(() => GetTestSchemas());
         managerMock.Setup(m => m.GetConnectorSchemasAsync("con3", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(GetTestSchemas().Result);
+            .Returns(() => GetTestSchemas());
 
-        var support = new FivetranConnectionSupport();
-
-        // Przechwycenie wyjścia
-        var writer = new StringWriter();
-        var ogOut = Console.Out;
-        Console.SetOut(writer);
+        var support = new FivetranConnectionSupport(console: consoleMock.Object);
 
         // Wywołanie
         await support.RunImportNew(wrapperMock);
 
-        // Przywrócenie konsoli
-        Console.SetOut(ogOut);
-
-        var output = writer.ToString();
-        _output.WriteLine(output); // Wypisanie przechwyconego wyjścia do testowego wyjścia
+        var output = outputbuffer.ToString();
+        _output.WriteLine(output);
 
         // Wyniki
-        Assert.NotNull(output);
-        Assert.Contains("Lineage mappings:", output);
-        Assert.Contains("con1:", output);
-        Assert.Contains("con2:", output);
-        Assert.Contains("con3:", output);
+        Assert.True(!string.IsNullOrEmpty(output)); // <-- mamy wyjście
+        Assert.Contains("Lineage mappings:", output); // <-- mamy nagłówek
+        Assert.True(await CheckImportOutput(output)); // <-- mamy wszystkie oczekiwane mapowania
     }
 
+
+    // Metoda dodatkowa do sprawdzenie czy w wyjściu konsoli znajdują się oczekiwane mapowania
+    private async Task<bool> CheckImportOutput(string output)
+    {
+        List<string> expectedMappings = new();
+        var schemas = await GetTestSchemas();
+        await foreach (var connector in GetTestConnectors()) // <-- Tworzymy każdą możliwą kombinację i sprawdzamy czy została zwrócona (charakterystyka testu)
+        {
+            foreach (var schema in schemas!.Schemas!)
+            {
+                foreach (var table in schema.Value!.Tables!)
+                {
+                    var mapping = $"{connector.Id}: {schema.Key}.{table.Key} -> {schema.Value.NameInDestination}.{table.Value.NameInDestination}";
+                    expectedMappings.Add(mapping);
+                }
+            }
+        }
+
+        for (int i = expectedMappings.Count - 1; i >= 0; i--)
+        {
+            if (output.Contains(expectedMappings[i]))
+            {
+                expectedMappings.RemoveAt(i);
+            }
+        }
+
+        return expectedMappings.Count == 0;
+
+    }
+
+    private static Mock<IConsoleIO> CreateConsoleMock(StringBuilder outputbuffer) // <-- Pomocnicza metoda do tworzenia zamockowanego IConsoleIO z przechwytywaniem wyjścia
+    {
+        var consoleMock = new Mock<IConsoleIO>();
+        consoleMock.Setup(c => c.WriteLine(It.IsAny<string>()))
+            .Callback<string>(msg => outputbuffer.AppendLine(msg));
+        consoleMock.Setup(c => c.Write(It.IsAny<string>()))
+            .Callback<string>(msg => outputbuffer.Append(msg));
+        consoleMock.Setup(c => c.Clear())
+            .Callback(() => outputbuffer.AppendLine("--- Console cleared ---"));
+
+        return consoleMock;
+    }
 }
